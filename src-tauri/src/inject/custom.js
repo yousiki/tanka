@@ -1,20 +1,23 @@
 // Tanka bridge script, injected last into every page load of g.tanka.ai.
-// Detects unread state from DOM signals and reports it to the Rust side
-// so it can render a dock badge and swap the tray icon.
+// Detects unread state from DOM signals and reports it to the Rust side,
+// which renders a dock badge and swaps the tray icon.
 //
-// Detection rules (each reviewed against the real g.tanka.ai DOM):
+// Detection rules:
 //
-//  1. document.title — looks for a "(N)" / "N - " prefix that counts unread.
-//     Defensive: if the site doesn't do this, the regex simply won't match.
+//  1. document.title — regex for "(N) …" / "N · …" style unread prefixes.
+//     If the site doesn't use this convention the regex simply won't match.
 //
-//  2. favicon URL — records the *baseline* favicon we see once the SPA has
-//     stabilized, and treats any deviation from that baseline as unread.
-//     We do NOT use substring heuristics like "contains the word 'red'"
-//     because they false-positive on completely normal URLs (the original
-//     version flagged "/tanka-favicon.png" as unread in some cases).
+//  2. favicon URL — observed for changes against a calibrated baseline.
+//     The baseline is captured ONLY when two conditions hold for 3 seconds
+//     continuously: the app is focused, and the favicon hasn't changed.
+//     That means we don't calibrate during the SPA's hydration churn, and
+//     we don't calibrate while the app is in the background (where an
+//     unread-variant favicon could be mistaken for the clean state).
+//     Before calibration, favicon-based detection returns 0 — we never
+//     pretend certainty we don't have.
 //
-// Diagnostics are exposed on `window.__tankaUnread` so you can inspect the
-// current state from the dev-mode devtools.
+// Diagnostics live on `window.__tankaUnread`; attach devtools in a debug
+// build to inspect.
 
 (function tankaBridge() {
   if (window.__tankaBridgeLoaded) return;
@@ -28,10 +31,15 @@
     baselineCapturedAt: 0,
     currentFavicon: null,
     lastTitle: "",
+    lastCalibrationReason: null,
   };
   window.__tankaUnread = state;
 
-  let debounceTimer = null;
+  const STABILITY_MS = 3000;
+  const REPORT_DEBOUNCE_MS = 100;
+
+  let reportTimer = null;
+  let stabilityTimer = null;
 
   function currentFaviconHref() {
     const link =
@@ -39,6 +47,14 @@
       document.querySelector('link[rel="shortcut icon"]') ||
       document.querySelector('link[rel*="icon"]');
     return link ? link.getAttribute("href") || "" : "";
+  }
+
+  function isAppFocused() {
+    return (
+      document.hasFocus() &&
+      (document.visibilityState === undefined ||
+        document.visibilityState === "visible")
+    );
   }
 
   function parseTitleCount(title) {
@@ -59,15 +75,15 @@
     const fromTitle = parseTitleCount(state.lastTitle);
     if (fromTitle > 0) return fromTitle;
 
-    if (
-      state.baselineFavicon !== null &&
-      state.currentFavicon !== "" &&
-      state.currentFavicon !== state.baselineFavicon
-    ) {
-      return 1;
-    }
+    // Without a calibrated baseline, every non-empty favicon would look
+    // "unknown" — default to 0 rather than guess. System notifications
+    // still fire independently; a missing dock badge is safer than a
+    // false one.
+    if (state.baselineFavicon === null) return 0;
 
-    return 0;
+    const current = state.currentFavicon;
+    if (!current || current === state.baselineFavicon) return 0;
+    return 1;
   }
 
   function report(count) {
@@ -81,33 +97,44 @@
   }
 
   function scheduleReport() {
-    if (debounceTimer) return;
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null;
+    if (reportTimer) return;
+    reportTimer = setTimeout(() => {
+      reportTimer = null;
       report(computeUnread());
-    }, 100);
+    }, REPORT_DEBOUNCE_MS);
   }
 
-  function captureBaseline() {
-    // Called once the SPA has had time to settle. Anything that looks like
-    // a valid favicon URL at this point is treated as the "no unread" state.
-    // If the site swaps the favicon for unread later, we'll see the deviation.
-    const href = currentFaviconHref();
-    if (href) {
-      state.baselineFavicon = href;
+  function resetStabilityTimer(reason) {
+    if (stabilityTimer) clearTimeout(stabilityTimer);
+    if (!isAppFocused()) return;
+    stabilityTimer = setTimeout(() => {
+      stabilityTimer = null;
+      // The app has been focused AND the favicon hasn't moved for
+      // STABILITY_MS. Treat whatever we see now as "the clean state".
+      // If the user opened the app already-focused with unread messages
+      // and just sat there doing nothing, we'd miscalibrate — but that
+      // case self-corrects the moment they read a message: the site
+      // updates the favicon, the stability timer resets, and the next
+      // stable window captures the clean variant.
+      state.baselineFavicon = currentFaviconHref();
       state.baselineCapturedAt = Date.now();
-    }
-    report(0);
+      state.lastCalibrationReason = reason;
+      scheduleReport();
+    }, STABILITY_MS);
+  }
+
+  function onFaviconOrTitleChange(reason) {
+    resetStabilityTimer(reason);
+    scheduleReport();
   }
 
   function observeTitle() {
     const titleEl = document.querySelector("head > title");
     if (!titleEl) return;
-    new MutationObserver(scheduleReport).observe(titleEl, {
-      childList: true,
-      characterData: true,
-      subtree: true,
-    });
+    new MutationObserver(() => onFaviconOrTitleChange("title")).observe(
+      titleEl,
+      { childList: true, characterData: true, subtree: true },
+    );
   }
 
   function observeFavicon() {
@@ -119,7 +146,7 @@
           r.type === "childList" ||
           (r.type === "attributes" && r.target.tagName === "LINK")
         ) {
-          scheduleReport();
+          onFaviconOrTitleChange("favicon");
           return;
         }
       }
@@ -131,15 +158,33 @@
     });
   }
 
+  function onFocus() {
+    resetStabilityTimer("focus");
+    scheduleReport();
+  }
+
+  function onBlur() {
+    if (stabilityTimer) clearTimeout(stabilityTimer);
+    stabilityTimer = null;
+    scheduleReport();
+  }
+
   function init() {
     observeTitle();
     observeFavicon();
-    // Give the SPA time to hydrate and finalize its favicon before we
-    // capture the "no unread" baseline.
-    setTimeout(captureBaseline, 2500);
-    // When the app regains focus the user is likely reading messages, so
-    // recompute (the site will usually have cleared the unread indicator).
-    window.addEventListener("focus", scheduleReport);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") onFocus();
+      else onBlur();
+    });
+
+    // If the app launches already focused, start the stability clock. If
+    // it isn't focused, we stay uncalibrated (and report 0) until the
+    // user focuses the window.
+    if (isAppFocused()) resetStabilityTimer("initial");
+
+    scheduleReport();
   }
 
   if (document.readyState === "loading") {
