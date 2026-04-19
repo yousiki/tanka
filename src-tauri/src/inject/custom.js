@@ -1,21 +1,26 @@
 // Tanka bridge script, injected last into every page load of g.tanka.ai.
-// Detects unread messages via TWO unambiguous signals — never favicon
-// string matching, which was prone to false positives and recalibration
-// bugs.
+// Detects unread messages via two unambiguous signals — never favicon
+// URL matching, which was prone to false positives and recalibration bugs.
 //
 //  1. window.Notification constructor invocations.
 //     The site calls `new Notification(...)` for each incoming message;
-//     Pake's event.js already wraps that to forward to macOS
-//     UserNotifications. We wrap it again to count the calls.
+//     Pake's event.js wraps that to forward to macOS. We wrap it once
+//     more to increment a counter when the app is NOT focused.
 //
 //  2. document.title regex.
 //     If the SPA ever prefixes the title with "(N) …" or "N - …" we
-//     parse it. Tanka's title convention isn't confirmed, so the regex
-//     simply won't match if the site doesn't use one.
+//     parse it. Unconfirmed for Tanka; if they don't use this convention
+//     the regex simply never matches.
 //
-// Clear rule: focusing the Tanka window counts as "user is reading",
-// so the reported count goes to 0 until a new notification arrives.
-// Same semantic as macOS Mail or the system notification center.
+// Focus means "the user is reading Tanka", so we consume state on focus:
+//   - notificationCount → 0 (counts things that arrived while away)
+//   - titleWatermark    → current titleCount (the title value that was
+//     on screen at focus time is treated as already-read; only further
+//     increments past the watermark count as new unread)
+//
+// Without the watermark, a stale title like "(3) Tanka" would re-surface
+// as unread the moment the user blurred again, even though they had just
+// been actively looking at it.
 //
 // Diagnostic state on window.__tankaUnread.
 
@@ -28,6 +33,7 @@
   const state = {
     notificationCount: 0,
     titleCount: 0,
+    titleWatermark: 0,
     lastReported: -1,
   };
   window.__tankaUnread = state;
@@ -47,7 +53,20 @@
   }
 
   function recomputeTitleCount() {
-    state.titleCount = parseTitleCount(document.title);
+    const parsed = parseTitleCount(document.title);
+    state.titleCount = parsed;
+    if (isAppFocused()) {
+      // While the user is looking at Tanka, every observed title value
+      // is "already consumed" — pin the watermark to match. Without this
+      // a title that dipped then returned to its prior value while
+      // focused would leak a stale unread when the user later blurred.
+      state.titleWatermark = parsed;
+    } else if (parsed < state.titleWatermark) {
+      // Backgrounded: a decreasing title means the user read some
+      // messages through another surface (phone, other window). Lower
+      // the watermark so a subsequent increment isn't masked.
+      state.titleWatermark = parsed;
+    }
   }
 
   function isAppFocused() {
@@ -59,12 +78,9 @@
   }
 
   function computeUnread() {
-    // Focus means the user is reading Tanka, so both signals should
-    // be treated as 0. Without this short-circuit, a title-derived
-    // count (the site setting "(3) Tanka" as its title) would survive
-    // focus, since clearCount() only zeros notificationCount.
     if (isAppFocused()) return 0;
-    return Math.max(state.notificationCount, state.titleCount);
+    const titleUnread = Math.max(0, state.titleCount - state.titleWatermark);
+    return Math.max(state.notificationCount, titleUnread);
   }
 
   function report(count) {
@@ -86,24 +102,25 @@
     }, REPORT_DEBOUNCE_MS);
   }
 
-  function clearCount() {
+  function consumeOnFocus() {
+    // User is looking at Tanka. Everything currently reflected in the
+    // counters has been "seen" for our purposes; don't resurrect it on
+    // the next blur.
     state.notificationCount = 0;
+    recomputeTitleCount();
+    state.titleWatermark = state.titleCount;
     scheduleReport();
   }
 
   function wrapNotificationConstructor() {
     const original = window.Notification;
     if (typeof original !== "function") {
-      // Pake's event.js should already have installed a shim; if it's
-      // missing we do nothing. The title-regex path still functions.
+      // Pake's event.js should have installed a shim; if it's missing
+      // the title-regex path still functions.
       return;
     }
 
     const wrapped = function (title, options) {
-      // If the window is focused the user is already looking at Tanka;
-      // an incoming Notification doesn't represent an "unread" from
-      // their perspective, so we skip the counter bump. The macOS alert
-      // still fires via Pake's original wrapper — that's independent.
       if (!isAppFocused()) {
         state.notificationCount += 1;
         scheduleReport();
@@ -111,9 +128,6 @@
       return new original(title, options);
     };
 
-    // Preserve the static members Pake set up (permission getter/setter,
-    // requestPermission, any class-level props). Copying descriptors
-    // rather than calling Object.assign keeps getters live.
     for (const key of Object.getOwnPropertyNames(original)) {
       if (key === "length" || key === "name" || key === "prototype") continue;
       const desc = Object.getOwnPropertyDescriptor(original, key);
@@ -165,15 +179,17 @@
     wrapNotificationConstructor();
     observeTitle();
 
-    // Focusing the window = user is (about to be) reading; clear state.
-    window.addEventListener("focus", clearCount);
+    window.addEventListener("focus", consumeOnFocus);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") clearCount();
+      if (document.visibilityState === "visible") consumeOnFocus();
       else scheduleReport();
     });
 
-    // Initial safe report — 0 until we actually see a notification.
-    scheduleReport();
+    // If the app launches already focused (Tauri typically does this),
+    // treat the starting state as consumed too. Prevents an initial
+    // stale-title badge that would appear the moment the user blurs.
+    if (isAppFocused()) consumeOnFocus();
+    else scheduleReport();
   }
 
   if (document.readyState === "loading") {
