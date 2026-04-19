@@ -1,5 +1,5 @@
 {
-  "name": "tanka-desktop",
+  "name": "tanka",
   "version": "0.1.0",
   "description": "Native macOS wrapper around g.tanka.ai (fork of tw93/Pake).",
   "private": true,

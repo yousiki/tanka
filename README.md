@@ -4,6 +4,8 @@ A native macOS wrapper for [g.tanka.ai](https://g.tanka.ai) — the Tanka
 work app as a proper desktop client with menu bar presence, dock badge,
 and system notifications. Forked from [tw93/Pake](https://github.com/tw93/Pake).
 
+Homebrew install: `brew install --cask yousiki/tanka/tanka`.
+
 Internal project, macOS only.
 
 ## Install via Homebrew
@@ -12,9 +14,9 @@ Internal project, macOS only.
 brew install --cask yousiki/tanka/tanka
 ```
 
-The cask automatically runs `xattr -dr com.apple.quarantine` on the
-installed app because we don't pay for an Apple Developer ID. If
-Gatekeeper still complains, run it yourself:
+Because we don't pay for an Apple Developer ID, macOS will refuse to
+launch the app until you strip the quarantine xattr. The cask prints
+this instruction in its caveats; run it yourself after install:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Tanka.app
@@ -71,12 +73,14 @@ open src-tauri/target/debug/pake     # the binary is still named "pake"
 3. `git tag v0.x.y && git push --tags`.
 4. GitHub Actions (`.github/workflows/release.yml`) builds arm64 + x86_64
    DMGs and publishes a GitHub Release.
-5. Update the cask in `yousiki/homebrew-tanka`. The release workflow
-   attaches a pre-populated `tanka.rb` to the GitHub Release (correct
-   version + both arch `sha256` values filled in from SHA256SUMS) —
-   download that and drop it into the tap repo as `Casks/tanka.rb`. The
-   template at [homebrew/tanka.rb](./homebrew/tanka.rb) is a reference;
-   don't publish it directly.
+5. Update the cask in the tap repo `yousiki/homebrew-tanka`. The release
+   workflow attaches a pre-populated `tanka.rb` to the GitHub Release
+   (correct version + both arch `sha256` values filled in from
+   `SHA256SUMS`). Download that asset and commit it to the tap repo at
+   `Casks/tanka.rb` — the `Casks/` directory (capital C) is Homebrew's
+   canonical location for cask files in a tap. The template at
+   [homebrew/tanka.rb](./homebrew/tanka.rb) is a reference for the
+   format; don't publish it directly.
 
 ## Keeping in sync with upstream Pake
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Fill the Homebrew cask template with the current release's hashes.
 
-Reads homebrew/tanka.rb, rewrites the version to match GITHUB_REF_NAME, and
-replaces both per-arch sha256 fields with values pulled from
+Reads homebrew/tanka.rb, rewrites the version to match GITHUB_REF_NAME,
+and replaces the per-arch sha256 values with hashes pulled from
 dist/SHA256SUMS. Writes the populated cask to dist/tanka.rb so the release
-workflow can attach it as a release asset.
+workflow can attach it as a release asset. Refuses to emit a cask that
+still contains the all-zeros placeholder.
 """
 from __future__ import annotations
 
@@ -25,6 +26,15 @@ def load_hashes(path: pathlib.Path) -> dict[str, str]:
         digest, name = parts
         out[name.strip().lstrip("*")] = digest
     return out
+
+
+def replace_arch_sha(source: str, arch_key: str, new_hash: str) -> str:
+    """Replace the hash in a `arch_key: "..."` pair inside the sha256 stanza."""
+    pattern = rf'(\b{arch_key}:\s*)"[0-9a-fA-F]{{64}}"'
+    replaced, count = re.subn(pattern, rf'\1"{new_hash}"', source, count=1)
+    if count != 1:
+        raise RuntimeError(f"did not find `{arch_key}:` hash slot in template")
+    return replaced
 
 
 def main() -> int:
@@ -53,10 +63,12 @@ def main() -> int:
 
     source = template.read_text()
     source = re.sub(r'version "[^"]*"', f'version "{ref}"', source, count=1)
-    # The template's arm_sha is a concrete hash (from the seed release),
-    # not the zeros placeholder — target the first sha256 that appears.
-    source = re.sub(r'sha256 "[^"]*"', f'sha256 "{arm_sha}"', source, count=1)
-    source = source.replace(f'sha256 "{HASH_ZEROS}"', f'sha256 "{intel_sha}"')
+    source = replace_arch_sha(source, "arm", arm_sha)
+    source = replace_arch_sha(source, "intel", intel_sha)
+
+    if HASH_ZEROS in source:
+        print("rendered cask still contains zeros placeholder", file=sys.stderr)
+        return 1
 
     output.write_text(source)
     print(source)
