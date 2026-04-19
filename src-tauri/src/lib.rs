@@ -17,6 +17,7 @@ use app::{
         update_theme_mode,
     },
     setup::{set_global_shortcut, set_system_tray},
+    unread::{set_unread, UnreadState},
     window::{open_additional_window_safe, set_window, MultiWindowState},
 };
 use util::get_pake_config;
@@ -80,12 +81,14 @@ pub fn run_app() {
             send_notification,
             update_theme_mode,
             clear_cache_and_restart,
+            set_unread,
         ])
         .setup(move |app| {
             app.manage(MultiWindowState::new(
                 pake_config.clone(),
                 tauri_config.clone(),
             ));
+            app.manage(UnreadState::default());
 
             // --- Menu Construction Start ---
             #[cfg(target_os = "macos")]
