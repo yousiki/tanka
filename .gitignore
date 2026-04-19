@@ -23,7 +23,6 @@
 .claude/
 AGENT.md
 AGENTS.md
-CLAUDE.md
 dist/*
 !dist/index.html
 dist-ssr
