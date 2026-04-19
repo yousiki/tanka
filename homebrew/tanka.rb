@@ -2,7 +2,7 @@ cask "tanka" do
   arch arm: "aarch64", intel: "x86_64"
 
   version "0.1.0"
-  sha256 arm:   "5cde1d9d8989d839a76920b43d5c2a36d6503f901feff2bc5c775a787eed04b0",
+  sha256 arm:   "a419d666455baec70c3e70295515c07cb597bc5f340e5ea775a5ff5693f5c1f4",
          intel: "0000000000000000000000000000000000000000000000000000000000000000"
 
   url "https://github.com/yousiki/tanka/releases/download/v#{version}/Tanka-#{arch}.dmg"
