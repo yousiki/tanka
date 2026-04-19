@@ -75,14 +75,18 @@ open src-tauri/target/debug/pake     # the binary is still named "pake"
 3. `git tag v0.x.y && git push --tags`.
 4. GitHub Actions (`.github/workflows/release.yml`) builds arm64 + x86_64
    DMGs and publishes a GitHub Release.
-5. Update the cask in the tap repo `yousiki/homebrew-tanka`. The release
-   workflow attaches a pre-populated `tanka.rb` to the GitHub Release
-   (correct version + both arch `sha256` values filled in from
-   `SHA256SUMS`). Download that asset and commit it to the tap repo at
-   `Casks/tanka.rb` — the `Casks/` directory (capital C) is Homebrew's
-   canonical location for cask files in a tap. The template at
-   [homebrew/tanka.rb](./homebrew/tanka.rb) is a reference for the
-   format; don't publish it directly.
+5. The cask in `yousiki/homebrew-tanka` updates itself. The release
+   workflow renders `tanka.rb` from `homebrew/tanka.rb` with the real
+   per-arch sha256 values, attaches it to the GitHub Release, and —
+   if the `HOMEBREW_TAP_TOKEN` secret is configured — pushes it to the
+   tap repo as `Casks/tanka.rb` with a commit message of the tag name.
+   If the token is absent the step is skipped; the GitHub Release
+   itself still succeeds and the tap can be updated by hand by
+   downloading the release's `tanka.rb` asset.
+
+   To enable the auto-update, create a fine-grained PAT with
+   `Contents: read and write` scoped to `yousiki/homebrew-tanka` only,
+   then add it as the `HOMEBREW_TAP_TOKEN` secret on `yousiki/tanka`.
 
 ## Keeping in sync with upstream Pake
 

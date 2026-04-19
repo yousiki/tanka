@@ -109,3 +109,33 @@ jobs:
             dist/SHA256SUMS
             dist/tanka.rb
           generate_release_notes: true
+
+      # Publishes the rendered cask to yousiki/homebrew-tanka so
+      # `brew install --cask yousiki/tanka/tanka` picks up the new
+      # version. Requires a secret HOMEBREW_TAP_TOKEN (a fine-grained
+      # PAT with Contents: read+write on homebrew-tanka only). If the
+      # secret is absent the step is skipped, so the release itself
+      # still succeeds.
+      - name: Update Homebrew tap (yousiki/homebrew-tanka)
+        if: ${{ env.TAP_TOKEN != '' }}
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          git clone --depth=1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/yousiki/homebrew-tanka.git" \
+            "$workdir"
+          mkdir -p "$workdir/Casks"
+          cp dist/tanka.rb "$workdir/Casks/tanka.rb"
+          cd "$workdir"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Casks/tanka.rb
+          if git diff --cached --quiet; then
+            echo "Cask already at the published version; nothing to push."
+            exit 0
+          fi
+          git commit -m "tanka ${TAG_NAME}"
+          git push origin HEAD:main
