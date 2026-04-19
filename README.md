@@ -47,7 +47,9 @@ xattr -dr com.apple.quarantine /Applications/Tanka.app
 
 Requires:
 
-- macOS 13+
+- macOS 13+ (Ventura) to build with current Xcode.
+  The *shipped* `.app` runs on macOS 12+ (Monterey), which is what the
+  Homebrew cask's `depends_on macos` floor declares.
 - [Bun](https://bun.sh/) ≥ 1.1
 - Rust toolchain (stable; `rust-toolchain.toml` pins the minimum)
 - Xcode command line tools

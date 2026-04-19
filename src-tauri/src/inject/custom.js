@@ -14,8 +14,8 @@
 //     simply won't match if the site doesn't use one.
 //
 // Clear rule: focusing the Tanka window counts as "user is reading",
-// so the counter resets to 0. Same semantic as macOS Mail or the
-// system notification center.
+// so the reported count goes to 0 until a new notification arrives.
+// Same semantic as macOS Mail or the system notification center.
 //
 // Diagnostic state on window.__tankaUnread.
 
@@ -34,6 +34,8 @@
 
   const REPORT_DEBOUNCE_MS = 60;
   let reportTimer = null;
+  let titleObserver = null;
+  let currentTitleEl = null;
 
   function parseTitleCount(title) {
     if (!title) return 0;
@@ -48,7 +50,20 @@
     state.titleCount = parseTitleCount(document.title);
   }
 
+  function isAppFocused() {
+    return (
+      document.hasFocus() &&
+      (document.visibilityState === undefined ||
+        document.visibilityState === "visible")
+    );
+  }
+
   function computeUnread() {
+    // Focus means the user is reading Tanka, so both signals should
+    // be treated as 0. Without this short-circuit, a title-derived
+    // count (the site setting "(3) Tanka" as its title) would survive
+    // focus, since clearCount() only zeros notificationCount.
+    if (isAppFocused()) return 0;
     return Math.max(state.notificationCount, state.titleCount);
   }
 
@@ -89,7 +104,7 @@
       // an incoming Notification doesn't represent an "unread" from
       // their perspective, so we skip the counter bump. The macOS alert
       // still fires via Pake's original wrapper — that's independent.
-      if (!(document.hasFocus() && document.visibilityState === "visible")) {
+      if (!isAppFocused()) {
         state.notificationCount += 1;
         scheduleReport();
       }
@@ -109,14 +124,41 @@
     window.Notification = wrapped;
   }
 
-  function observeTitle() {
+  function attachTitleObserver() {
     const titleEl = document.querySelector("head > title");
-    if (!titleEl) return;
-    new MutationObserver(scheduleReport).observe(titleEl, {
+    if (!titleEl || titleEl === currentTitleEl) return;
+    if (titleObserver) titleObserver.disconnect();
+    currentTitleEl = titleEl;
+    titleObserver = new MutationObserver(scheduleReport);
+    titleObserver.observe(titleEl, {
       childList: true,
       characterData: true,
       subtree: true,
     });
+    scheduleReport();
+  }
+
+  function observeTitle() {
+    attachTitleObserver();
+    // Some SPAs replace the whole <title> node rather than mutate its
+    // text. Watch the <head> for childList changes and reattach our
+    // observer whenever a new <title> appears.
+    const head = document.head;
+    if (!head) return;
+    new MutationObserver((records) => {
+      for (const r of records) {
+        if (r.type !== "childList") continue;
+        const replaced =
+          Array.from(r.removedNodes).some((n) => n === currentTitleEl) ||
+          Array.from(r.addedNodes).some(
+            (n) => n.nodeType === Node.ELEMENT_NODE && n.tagName === "TITLE",
+          );
+        if (replaced) {
+          attachTitleObserver();
+          return;
+        }
+      }
+    }).observe(head, { childList: true });
   }
 
   function init() {
@@ -127,6 +169,7 @@
     window.addEventListener("focus", clearCount);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") clearCount();
+      else scheduleReport();
     });
 
     // Initial safe report — 0 until we actually see a notification.

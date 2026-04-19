@@ -1,7 +1,3 @@
-
-!dist/.gitkeep
-!dist/about_pake.html
-!dist/cli.js
 .DS_Store
 .idea
 .next
@@ -28,7 +24,8 @@
 AGENT.md
 AGENTS.md
 CLAUDE.md
-dist
+dist/*
+!dist/index.html
 dist-ssr
 journal/
 lerna-debug.log*

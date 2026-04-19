@@ -7,9 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.1.0). Leave empty to use HEAD."
-        required: false
-        default: ""
+        description: "Tag (e.g. v0.1.0) to check out and publish. Required for manual runs to produce a release."
+        required: true
 
 jobs:
   build:
@@ -25,6 +24,8 @@ jobs:
             arch: x86_64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -48,9 +49,14 @@ jobs:
         run: |
           set -euo pipefail
           cd src-tauri/target/${{ matrix.target }}/release/bundle/dmg
-          for f in *.dmg; do
-            mv "$f" "Tanka-${{ matrix.arch }}.dmg"
-          done
+          shopt -s nullglob
+          dmgs=(*.dmg)
+          shopt -u nullglob
+          if [ "${#dmgs[@]}" -ne 1 ]; then
+            echo "expected exactly one .dmg, found ${#dmgs[@]}: ${dmgs[*]}" >&2
+            exit 1
+          fi
+          mv -- "${dmgs[0]}" "Tanka-${{ matrix.arch }}.dmg"
           ls -la
 
       - uses: actions/upload-artifact@v4
@@ -62,11 +68,13 @@ jobs:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -82,10 +90,11 @@ jobs:
       - name: Generate release-ready Homebrew cask
         run: python3 .github/scripts/render_cask.py
         env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_NAME: ${{ inputs.tag || github.ref_name }}
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             dist/Tanka-aarch64.dmg
             dist/Tanka-x86_64.dmg

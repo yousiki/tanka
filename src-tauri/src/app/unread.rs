@@ -10,21 +10,29 @@ pub struct UnreadState {
 }
 
 impl UnreadState {
-    fn swap(&self, new_count: u32) -> u32 {
-        self.count.swap(new_count, Ordering::Relaxed)
+    fn store(&self, new_count: u32) {
+        self.count.store(new_count, Ordering::Relaxed);
+    }
+
+    fn load(&self) -> u32 {
+        self.count.load(Ordering::Relaxed)
     }
 }
 
 #[command]
 pub fn set_unread(app: AppHandle, count: u32) -> Result<(), String> {
     let state = app.state::<UnreadState>();
-    let previous = state.swap(count);
-    if previous == count {
-        return Ok(());
-    }
+    state.store(count);
     let handle = app.clone();
-    app.run_on_main_thread(move || apply_unread(&handle, count))
-        .map_err(|e| format!("dispatch to main thread failed: {e}"))
+    // Re-read the state on the main thread before applying. If two IPC
+    // calls (e.g. 1 then 0) race and their main-thread closures arrive
+    // out of order, we want the final render to match the latest stored
+    // count rather than whichever closure happened to execute last.
+    app.run_on_main_thread(move || {
+        let current = handle.state::<UnreadState>().load();
+        apply_unread(&handle, current);
+    })
+    .map_err(|e| format!("dispatch to main thread failed: {e}"))
 }
 
 pub fn apply_unread(app: &AppHandle, count: u32) {
