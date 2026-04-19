@@ -77,23 +77,27 @@
     if (isAppFocused()) {
       // While focused, every observed title value is "already consumed".
       state.titleWatermark = parsed;
-    } else {
-      if (parsed < state.titleWatermark) {
-        // Backgrounded + decreasing title = user read on another surface;
-        // lower the watermark so future increments aren't masked.
-        state.titleWatermark = parsed;
-      }
-      // If the site itself decreased the title counter (e.g. user read
-      // messages on their phone), treat that as authoritative for the
-      // whole unread stream. Otherwise notificationCount — which counts
-      // Notification() calls that fired while we were backgrounded —
-      // would stay stuck at, say, 5 while the site now shows 0 unread,
-      // leaving a permanent dock badge until the user focused this app.
-      // Guard on `previous > 0` so sites that never use title-based
-      // counts don't accidentally clamp legitimate notifications.
-      if (previous > 0 && parsed < previous) {
-        state.notificationCount = Math.min(state.notificationCount, parsed);
-      }
+      return;
+    }
+    if (parsed < state.titleWatermark) {
+      // Backgrounded + decreasing title = user read on another surface;
+      // lower the watermark so future increments aren't masked.
+      state.titleWatermark = parsed;
+    }
+    // When the site's own counter drops, the user has read some
+    // messages through another surface (phone, other window). Subtract
+    // the delta from notificationCount so the two signals stay in sync
+    // — a simple `Math.min(notif, parsed)` is NOT enough, because
+    // partial reads can leave parsed higher than notif (e.g. watermark
+    // 3 + notif 5 + title 8 → title 6 after two reads should drop
+    // notif to 3, but min(5, 6) leaves it at 5).
+    //
+    // Guarded on `previous > 0` so sites that never emit title-based
+    // counts can't retroactively zero out legitimate notifications the
+    // first time they happen to stamp a numeric prefix.
+    if (previous > 0 && parsed < previous) {
+      const delta = previous - parsed;
+      state.notificationCount = Math.max(0, state.notificationCount - delta);
     }
   }
 
