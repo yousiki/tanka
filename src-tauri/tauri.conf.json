@@ -1,12 +1,12 @@
 {
-  "productName": "Weekly",
-  "identifier": "com.pake.weekly",
-  "version": "3.11.3",
+  "productName": "Tanka",
+  "identifier": "ai.tanka.desktop",
+  "version": "0.1.0",
   "app": {
     "withGlobalTauri": true,
     "trayIcon": {
-      "iconPath": "png/weekly_512.png",
-      "iconAsTemplate": false,
+      "iconPath": "png/tray-plain.png",
+      "iconAsTemplate": true,
       "id": "pake-tray"
     },
     "security": {

@@ -1,12 +1,12 @@
 {
   "windows": [
     {
-      "url": "https://weekly.tw93.fun/en",
+      "url": "https://g.tanka.ai/",
       "url_type": "web",
-      "hide_title_bar": true,
+      "hide_title_bar": false,
       "fullscreen": false,
       "width": 1200,
-      "height": 780,
+      "height": 800,
       "resizable": true,
       "always_on_top": false,
       "dark_mode": false,
@@ -15,7 +15,7 @@
       "hide_on_close": true,
       "incognito": false,
       "enable_wasm": false,
-      "enable_drag_drop": false,
+      "enable_drag_drop": true,
       "maximize": false,
       "start_to_tray": false,
       "force_internal_navigation": false,
@@ -29,11 +29,11 @@
     "windows": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
   },
   "system_tray": {
-    "macos": false,
+    "macos": true,
     "linux": true,
     "windows": true
   },
-  "system_tray_path": "icons/icon.png",
+  "system_tray_path": "png/tray-plain.png",
   "inject": [],
   "proxy_url": "",
   "multi_instance": false,
