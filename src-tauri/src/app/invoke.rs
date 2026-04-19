@@ -1,10 +1,29 @@
 use crate::util::{check_file_or_append, get_download_message_with_lang, show_toast, MessageType};
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::Path;
 use std::str::FromStr;
 use tauri::http::Method;
 use tauri::{command, AppHandle, Manager, Url, WebviewWindow};
 use tauri_plugin_http::reqwest::{ClientBuilder, Request};
+
+/// Reduce a caller-supplied filename to a safe basename rooted under the
+/// download directory. Rejects empty, "."/".." -only, and NUL-containing
+/// inputs. Because the returned string contains no path separators, joining
+/// it to a canonical download_dir cannot escape that directory.
+fn sanitize_download_filename(raw: &str) -> Result<String, String> {
+    if raw.is_empty() || raw.contains('\0') {
+        return Err("invalid filename".to_string());
+    }
+    let base = Path::new(raw)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "invalid filename".to_string())?;
+    if base.is_empty() || base == "." || base == ".." {
+        return Err("invalid filename".to_string());
+    }
+    Ok(base.to_string())
+}
 
 #[cfg(target_os = "macos")]
 use tauri::Theme;
@@ -39,12 +58,14 @@ pub async fn download_file(app: AppHandle, params: DownloadFileParams) -> Result
         &get_download_message_with_lang(MessageType::Start, params.language.clone()),
     );
 
+    let safe_name = sanitize_download_filename(&params.filename)?;
+
     let download_dir = app
         .path()
         .download_dir()
         .map_err(|e| format!("Failed to get download dir: {}", e))?;
 
-    let output_path = download_dir.join(&params.filename);
+    let output_path = download_dir.join(&safe_name);
 
     let path_str = output_path.to_str().ok_or("Invalid output path")?;
 
@@ -102,12 +123,14 @@ pub async fn download_file_by_binary(
         &get_download_message_with_lang(MessageType::Start, params.language.clone()),
     );
 
+    let safe_name = sanitize_download_filename(&params.filename)?;
+
     let download_dir = app
         .path()
         .download_dir()
         .map_err(|e| format!("Failed to get download dir: {}", e))?;
 
-    let output_path = download_dir.join(&params.filename);
+    let output_path = download_dir.join(&safe_name);
 
     let path_str = output_path.to_str().ok_or("Invalid output path")?;
 

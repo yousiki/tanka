@@ -71,15 +71,29 @@
     // title might have changed. Must run before control returns to the
     // event loop so that a focus→blur transition doesn't land between
     // the mutation and our watermark update.
+    const previous = state.titleCount;
     const parsed = parseTitleCount(document.title);
     state.titleCount = parsed;
     if (isAppFocused()) {
       // While focused, every observed title value is "already consumed".
       state.titleWatermark = parsed;
-    } else if (parsed < state.titleWatermark) {
-      // Backgrounded + decreasing title = user read on another surface;
-      // lower the watermark so future increments aren't masked.
-      state.titleWatermark = parsed;
+    } else {
+      if (parsed < state.titleWatermark) {
+        // Backgrounded + decreasing title = user read on another surface;
+        // lower the watermark so future increments aren't masked.
+        state.titleWatermark = parsed;
+      }
+      // If the site itself decreased the title counter (e.g. user read
+      // messages on their phone), treat that as authoritative for the
+      // whole unread stream. Otherwise notificationCount — which counts
+      // Notification() calls that fired while we were backgrounded —
+      // would stay stuck at, say, 5 while the site now shows 0 unread,
+      // leaving a permanent dock badge until the user focused this app.
+      // Guard on `previous > 0` so sites that never use title-based
+      // counts don't accidentally clamp legitimate notifications.
+      if (previous > 0 && parsed < previous) {
+        state.notificationCount = Math.min(state.notificationCount, parsed);
+      }
     }
   }
 
