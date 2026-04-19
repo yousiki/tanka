@@ -35,6 +35,14 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # rust-toolchain.toml pins 1.93.0, which is what cargo actually uses
+      # inside the repo. dtolnay installs the target against *stable*, not
+      # against 1.93.0 — without this explicit add, the pinned toolchain
+      # has no x86_64-apple-darwin and the matrix build fails.
+      - name: Install target on pinned toolchain
+        working-directory: src-tauri
+        run: rustup target add ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
