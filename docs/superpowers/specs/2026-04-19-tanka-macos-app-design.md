@@ -58,12 +58,14 @@ amount of Tanka-specific Rust + JS on top.
 │  │    → invoke("send_notification")  │  │
 │  │                                   │  │
 │  │ Added (custom.js → tanka-bridge): │  │
-│  │  · MutationObserver on <link      │  │
-│  │    rel=icon> → parse unread from  │  │
-│  │    favicon path / presence of     │  │
-│  │    red-dot variant                │  │
-│  │  · observer on document.title →   │  │
-│  │    parse "(N) …" prefix           │  │
+│  │  · wraps window.Notification once │  │
+│  │    more to count unread arrivals  │  │
+│  │    (but only when the window is   │  │
+│  │    NOT focused)                   │  │
+│  │  · document.title regex for       │  │
+│  │    "(N) …" unread prefixes        │  │
+│  │  · focus / visibilitychange →     │  │
+│  │    counter = 0                    │  │
 │  │  · debounced invoke("set_unread", │  │
 │  │    {count})                       │  │
 │  └───────────────────────────────────┘  │
@@ -87,22 +89,41 @@ uses this API (user confirmed the browser already shows popups today). We
 inherit this path unchanged. The site's custom notification sound is played
 by its own `<audio>` element and works inside the webview.
 
-### Unread detection from DOM, not protocol
+### Unread detection: Notification-constructor counter + title regex
 
 The site is a Vue/iView SPA with no PWA manifest and no public unread API.
-Observed signals for unread state:
+We infer unread from two *unambiguous* signals and avoid favicon URL
+parsing entirely — earlier attempts to match favicon URLs against
+substring hints (`red`, `unread`, `badge`) false-positived, and any
+calibration scheme for mapping "which favicon URL means clean" has
+pathological edge cases (opening the app with unread, recalibrating
+while focused with unread, etc.).
 
-- **favicon changes** (user confirmed). We MutationObserve `<link rel*="icon">`
-  and detect a known "unread variant" URL.
-- **document.title changes** — probable but unconfirmed. We observe
-  `document.title` and parse a leading `(N)` / `N+` pattern defensively.
+1. **`window.Notification` wrapper.** Pake's `event.js` already replaces
+   the `Notification` constructor with a shim that forwards to
+   `tauri-plugin-notification`. `custom.js` wraps *that* shim to also
+   increment an unread counter whenever the site fires a notification
+   **while the Tanka window is not focused**. Focus means the user is
+   already looking at Tanka, so a concurrent notification is not unread
+   from their perspective (the macOS alert still fires, independent).
+2. **`document.title` regex.** If the SPA ever prefixes the title with
+   `(N) …`, `【N】…`, or `N - …` we parse that. Unconfirmed for Tanka; if
+   they don't use this convention the regex simply never matches.
 
-Whichever fires first wins; counts are debounced before hitting the Rust
-side (100ms window) to avoid update storms.
+The reported count is `max(notificationCount, titleCount)`. Focusing the
+window resets `notificationCount` to 0 — standard IM semantic (same as
+macOS Mail: opening the app clears the badge). `visibilitychange` also
+counts as focus for this purpose, so hiding/showing the window behaves
+intuitively.
 
-Future-proofing note: if the site adds a more direct signal (a global
-`window.tanka.unread`, a `BroadcastChannel`, a DOM data attribute) we can
-prefer that over the favicon heuristic.
+Debounced at 60ms to collapse bursts.
+
+Trade-off: the counter is reset-on-focus, not reset-on-read-each-message.
+If the user focuses briefly without reading, the badge clears. That
+matches every other desktop IM app. If the user quits and relaunches
+the app, the counter starts at 0 and prior unread (if any) isn't
+represented in the badge — the site's own UI indicates unread state
+once the window loads.
 
 ### Dock badge via objc2
 
@@ -207,12 +228,15 @@ tanka/
 
 ## Risks
 
-- **Favicon detection fragile**: if Tanka redesigns their favicons, our
-  heuristic breaks silently (no badge updates). Mitigation: log parse
-  failures via `eprintln` during dev; add a dev-mode overlay that shows
-  the last parsed count.
 - **Main-thread NSDockTile calls**: if invoked off the main thread we'll
-  crash. Mitigation: route through Tauri's `run_on_main_thread`.
+  crash. Mitigation: route through Tauri's `run_on_main_thread`
+  (implemented in `unread.rs`).
+- **Notification-wrapper coupling to Pake's shim**: we wrap whatever
+  `window.Notification` is at custom.js load. If a future Pake refactor
+  changes that injection order or replaces the shim mid-session, our
+  wrapper wraps something unexpected. Mitigation: Pake's `event.js`
+  layout is stable and custom.js is explicitly documented as the
+  last-inject slot; if that changes we'll notice on rebase.
 - **Future Pake rebases**: they may refactor `src/inject/` or `src/app/`
   and our patches will conflict. Mitigation: keep Tanka additions in
   NEW files (`unread.rs`, `custom.js` content) where possible; minimize

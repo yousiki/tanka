@@ -1,23 +1,23 @@
 // Tanka bridge script, injected last into every page load of g.tanka.ai.
-// Detects unread state from DOM signals and reports it to the Rust side,
-// which renders a dock badge and swaps the tray icon.
+// Detects unread messages via TWO unambiguous signals — never favicon
+// string matching, which was prone to false positives and recalibration
+// bugs.
 //
-// Detection rules:
+//  1. window.Notification constructor invocations.
+//     The site calls `new Notification(...)` for each incoming message;
+//     Pake's event.js already wraps that to forward to macOS
+//     UserNotifications. We wrap it again to count the calls.
 //
-//  1. document.title — regex for "(N) …" / "N · …" style unread prefixes.
-//     If the site doesn't use this convention the regex simply won't match.
+//  2. document.title regex.
+//     If the SPA ever prefixes the title with "(N) …" or "N - …" we
+//     parse it. Tanka's title convention isn't confirmed, so the regex
+//     simply won't match if the site doesn't use one.
 //
-//  2. favicon URL — observed for changes against a calibrated baseline.
-//     The baseline is captured ONLY when two conditions hold for 3 seconds
-//     continuously: the app is focused, and the favicon hasn't changed.
-//     That means we don't calibrate during the SPA's hydration churn, and
-//     we don't calibrate while the app is in the background (where an
-//     unread-variant favicon could be mistaken for the clean state).
-//     Before calibration, favicon-based detection returns 0 — we never
-//     pretend certainty we don't have.
+// Clear rule: focusing the Tanka window counts as "user is reading",
+// so the counter resets to 0. Same semantic as macOS Mail or the
+// system notification center.
 //
-// Diagnostics live on `window.__tankaUnread`; attach devtools in a debug
-// build to inspect.
+// Diagnostic state on window.__tankaUnread.
 
 (function tankaBridge() {
   if (window.__tankaBridgeLoaded) return;
@@ -26,64 +26,30 @@
   const invoke = () => window.__TAURI__?.core?.invoke;
 
   const state = {
+    notificationCount: 0,
+    titleCount: 0,
     lastReported: -1,
-    baselineFavicon: null,
-    baselineCapturedAt: 0,
-    currentFavicon: null,
-    lastTitle: "",
-    lastCalibrationReason: null,
   };
   window.__tankaUnread = state;
 
-  const STABILITY_MS = 3000;
-  const REPORT_DEBOUNCE_MS = 100;
-
+  const REPORT_DEBOUNCE_MS = 60;
   let reportTimer = null;
-  let stabilityTimer = null;
-
-  function currentFaviconHref() {
-    const link =
-      document.querySelector('link[rel="icon"]') ||
-      document.querySelector('link[rel="shortcut icon"]') ||
-      document.querySelector('link[rel*="icon"]');
-    return link ? link.getAttribute("href") || "" : "";
-  }
-
-  function isAppFocused() {
-    return (
-      document.hasFocus() &&
-      (document.visibilityState === undefined ||
-        document.visibilityState === "visible")
-    );
-  }
 
   function parseTitleCount(title) {
     if (!title) return 0;
-    // "(3) Tanka", "[12] Tanka", "【3】Tanka"
     const m = title.match(/^\s*[(\[【](\d+)\+?[)\]】]/);
     if (m) return parseInt(m[1], 10);
-    // "3 · Tanka", "12 - Tanka", "5: Tanka"
     const n = title.match(/^\s*(\d+)\+?\s*[·\-:]/);
     if (n) return parseInt(n[1], 10);
     return 0;
   }
 
+  function recomputeTitleCount() {
+    state.titleCount = parseTitleCount(document.title);
+  }
+
   function computeUnread() {
-    state.currentFavicon = currentFaviconHref();
-    state.lastTitle = document.title;
-
-    const fromTitle = parseTitleCount(state.lastTitle);
-    if (fromTitle > 0) return fromTitle;
-
-    // Without a calibrated baseline, every non-empty favicon would look
-    // "unknown" — default to 0 rather than guess. System notifications
-    // still fire independently; a missing dock badge is safer than a
-    // false one.
-    if (state.baselineFavicon === null) return 0;
-
-    const current = state.currentFavicon;
-    if (!current || current === state.baselineFavicon) return 0;
-    return 1;
+    return Math.max(state.notificationCount, state.titleCount);
   }
 
   function report(count) {
@@ -100,90 +66,70 @@
     if (reportTimer) return;
     reportTimer = setTimeout(() => {
       reportTimer = null;
+      recomputeTitleCount();
       report(computeUnread());
     }, REPORT_DEBOUNCE_MS);
   }
 
-  function resetStabilityTimer(reason) {
-    if (stabilityTimer) clearTimeout(stabilityTimer);
-    if (!isAppFocused()) return;
-    stabilityTimer = setTimeout(() => {
-      stabilityTimer = null;
-      // The app has been focused AND the favicon hasn't moved for
-      // STABILITY_MS. Treat whatever we see now as "the clean state".
-      // If the user opened the app already-focused with unread messages
-      // and just sat there doing nothing, we'd miscalibrate — but that
-      // case self-corrects the moment they read a message: the site
-      // updates the favicon, the stability timer resets, and the next
-      // stable window captures the clean variant.
-      state.baselineFavicon = currentFaviconHref();
-      state.baselineCapturedAt = Date.now();
-      state.lastCalibrationReason = reason;
-      scheduleReport();
-    }, STABILITY_MS);
+  function clearCount() {
+    state.notificationCount = 0;
+    scheduleReport();
   }
 
-  function onFaviconOrTitleChange(reason) {
-    resetStabilityTimer(reason);
-    scheduleReport();
+  function wrapNotificationConstructor() {
+    const original = window.Notification;
+    if (typeof original !== "function") {
+      // Pake's event.js should already have installed a shim; if it's
+      // missing we do nothing. The title-regex path still functions.
+      return;
+    }
+
+    const wrapped = function (title, options) {
+      // If the window is focused the user is already looking at Tanka;
+      // an incoming Notification doesn't represent an "unread" from
+      // their perspective, so we skip the counter bump. The macOS alert
+      // still fires via Pake's original wrapper — that's independent.
+      if (!(document.hasFocus() && document.visibilityState === "visible")) {
+        state.notificationCount += 1;
+        scheduleReport();
+      }
+      return new original(title, options);
+    };
+
+    // Preserve the static members Pake set up (permission getter/setter,
+    // requestPermission, any class-level props). Copying descriptors
+    // rather than calling Object.assign keeps getters live.
+    for (const key of Object.getOwnPropertyNames(original)) {
+      if (key === "length" || key === "name" || key === "prototype") continue;
+      const desc = Object.getOwnPropertyDescriptor(original, key);
+      if (desc) Object.defineProperty(wrapped, key, desc);
+    }
+    if (original.prototype) wrapped.prototype = original.prototype;
+
+    window.Notification = wrapped;
   }
 
   function observeTitle() {
     const titleEl = document.querySelector("head > title");
     if (!titleEl) return;
-    new MutationObserver(() => onFaviconOrTitleChange("title")).observe(
-      titleEl,
-      { childList: true, characterData: true, subtree: true },
-    );
-  }
-
-  function observeFavicon() {
-    const head = document.head;
-    if (!head) return;
-    new MutationObserver((records) => {
-      for (const r of records) {
-        if (
-          r.type === "childList" ||
-          (r.type === "attributes" && r.target.tagName === "LINK")
-        ) {
-          onFaviconOrTitleChange("favicon");
-          return;
-        }
-      }
-    }).observe(head, {
+    new MutationObserver(scheduleReport).observe(titleEl, {
       childList: true,
+      characterData: true,
       subtree: true,
-      attributes: true,
-      attributeFilter: ["href", "rel"],
     });
-  }
-
-  function onFocus() {
-    resetStabilityTimer("focus");
-    scheduleReport();
-  }
-
-  function onBlur() {
-    if (stabilityTimer) clearTimeout(stabilityTimer);
-    stabilityTimer = null;
-    scheduleReport();
   }
 
   function init() {
+    wrapNotificationConstructor();
     observeTitle();
-    observeFavicon();
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("blur", onBlur);
+
+    // Focusing the window = user is (about to be) reading; clear state.
+    window.addEventListener("focus", clearCount);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") onFocus();
-      else onBlur();
+      if (document.visibilityState === "visible") clearCount();
     });
 
-    // If the app launches already focused, start the stability clock. If
-    // it isn't focused, we stay uncalibrated (and report 0) until the
-    // user focuses the window.
-    if (isAppFocused()) resetStabilityTimer("initial");
-
+    // Initial safe report — 0 until we actually see a notification.
     scheduleReport();
   }
 
