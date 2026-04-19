@@ -77,10 +77,30 @@ jobs:
       - name: Generate SHA256 checksums
         run: cd dist && shasum -a 256 *.dmg > SHA256SUMS
 
+      - name: Generate release-ready Homebrew cask
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          arm_sha=$(awk '/Tanka-aarch64.dmg$/ {print $1}' dist/SHA256SUMS)
+          intel_sha=$(awk '/Tanka-x86_64.dmg$/ {print $1}' dist/SHA256SUMS)
+          if [[ -z "$arm_sha" || -z "$intel_sha" ]]; then
+            echo "Could not extract both arch hashes from SHA256SUMS" >&2
+            cat dist/SHA256SUMS >&2
+            exit 1
+          fi
+          sed \
+            -e "s|version \"[^\"]*\"|version \"${version}\"|" \
+            -e "0,/sha256 \"[^\"]*\"/ s||sha256 \"${arm_sha}\"|" \
+            -e "s|sha256 \"0\{64\}\"|sha256 \"${intel_sha}\"|" \
+            homebrew/tanka.rb > dist/tanka.rb
+          echo "---"
+          cat dist/tanka.rb
+
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/Tanka-aarch64.dmg
             dist/Tanka-x86_64.dmg
             dist/SHA256SUMS
+            dist/tanka.rb
           generate_release_notes: true
