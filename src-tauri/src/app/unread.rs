@@ -10,10 +10,6 @@ pub struct UnreadState {
 }
 
 impl UnreadState {
-    pub fn get(&self) -> u32 {
-        self.count.load(Ordering::Relaxed)
-    }
-
     fn swap(&self, new_count: u32) -> u32 {
         self.count.swap(new_count, Ordering::Relaxed)
     }
@@ -69,7 +65,7 @@ fn set_dock_badge(count: u32) {
         n if n > 99 => Some(NSString::from_str("99+")),
         n => Some(NSString::from_str(&n.to_string())),
     };
-    unsafe { tile.setBadgeLabel(label.as_deref()) };
+    tile.setBadgeLabel(label.as_deref());
 }
 
 #[cfg(not(target_os = "macos"))]
