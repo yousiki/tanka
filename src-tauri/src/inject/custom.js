@@ -12,15 +12,21 @@
 //     parse it. Unconfirmed for Tanka; if they don't use this convention
 //     the regex simply never matches.
 //
-// Focus means "the user is reading Tanka", so we consume state on focus:
-//   - notificationCount → 0 (counts things that arrived while away)
-//   - titleWatermark    → current titleCount (the title value that was
-//     on screen at focus time is treated as already-read; only further
-//     increments past the watermark count as new unread)
+// Focus semantics:
+//   - notificationCount → 0 (things that arrived while away; consumed).
+//   - titleWatermark    → current titleCount (the title value shown at
+//     focus time is treated as already-read; only further increments
+//     past the watermark count as new unread).
 //
-// Without the watermark, a stale title like "(3) Tanka" would re-surface
-// as unread the moment the user blurred again, even though they had just
-// been actively looking at it.
+// Without the watermark, a stale "(3) Tanka" title would re-surface as
+// unread the moment the user blurred, even though they had just been
+// actively looking at it.
+//
+// Title state MUST be synced synchronously in the MutationObserver
+// callback. If it were deferred to the debounced report handler, a
+// title change at T=0 that races with a blur at T=30ms would be
+// watermarked under the WRONG focus state (the debounce fires at T=60
+// after blur has already flipped isAppFocused() to false).
 //
 // Diagnostic state on window.__tankaUnread.
 
@@ -52,29 +58,29 @@
     return 0;
   }
 
-  function recomputeTitleCount() {
-    const parsed = parseTitleCount(document.title);
-    state.titleCount = parsed;
-    if (isAppFocused()) {
-      // While the user is looking at Tanka, every observed title value
-      // is "already consumed" — pin the watermark to match. Without this
-      // a title that dipped then returned to its prior value while
-      // focused would leak a stale unread when the user later blurred.
-      state.titleWatermark = parsed;
-    } else if (parsed < state.titleWatermark) {
-      // Backgrounded: a decreasing title means the user read some
-      // messages through another surface (phone, other window). Lower
-      // the watermark so a subsequent increment isn't masked.
-      state.titleWatermark = parsed;
-    }
-  }
-
   function isAppFocused() {
     return (
       document.hasFocus() &&
       (document.visibilityState === undefined ||
         document.visibilityState === "visible")
     );
+  }
+
+  function syncTitleState() {
+    // Called synchronously from whichever observer/event realized the
+    // title might have changed. Must run before control returns to the
+    // event loop so that a focus→blur transition doesn't land between
+    // the mutation and our watermark update.
+    const parsed = parseTitleCount(document.title);
+    state.titleCount = parsed;
+    if (isAppFocused()) {
+      // While focused, every observed title value is "already consumed".
+      state.titleWatermark = parsed;
+    } else if (parsed < state.titleWatermark) {
+      // Backgrounded + decreasing title = user read on another surface;
+      // lower the watermark so future increments aren't masked.
+      state.titleWatermark = parsed;
+    }
   }
 
   function computeUnread() {
@@ -97,18 +103,26 @@
     if (reportTimer) return;
     reportTimer = setTimeout(() => {
       reportTimer = null;
-      recomputeTitleCount();
       report(computeUnread());
     }, REPORT_DEBOUNCE_MS);
   }
 
+  function onTitleMutation() {
+    syncTitleState();
+    scheduleReport();
+  }
+
   function consumeOnFocus() {
-    // User is looking at Tanka. Everything currently reflected in the
-    // counters has been "seen" for our purposes; don't resurrect it on
-    // the next blur.
     state.notificationCount = 0;
-    recomputeTitleCount();
-    state.titleWatermark = state.titleCount;
+    syncTitleState(); // pins watermark to titleCount since we're focused
+    scheduleReport();
+  }
+
+  function onBlur() {
+    // Re-sync so a decreasing title observed at blur time gets
+    // recorded correctly; this doesn't bump the watermark up (we're not
+    // focused), but it does let us drop it if the site just cleared.
+    syncTitleState();
     scheduleReport();
   }
 
@@ -143,20 +157,20 @@
     if (!titleEl || titleEl === currentTitleEl) return;
     if (titleObserver) titleObserver.disconnect();
     currentTitleEl = titleEl;
-    titleObserver = new MutationObserver(scheduleReport);
+    titleObserver = new MutationObserver(onTitleMutation);
     titleObserver.observe(titleEl, {
       childList: true,
       characterData: true,
       subtree: true,
     });
-    scheduleReport();
+    // Sync once immediately; the new <title> may have a different value.
+    onTitleMutation();
   }
 
   function observeTitle() {
     attachTitleObserver();
     // Some SPAs replace the whole <title> node rather than mutate its
-    // text. Watch the <head> for childList changes and reattach our
-    // observer whenever a new <title> appears.
+    // text. Watch <head> childList and reattach when <title> swaps.
     const head = document.head;
     if (!head) return;
     new MutationObserver((records) => {
@@ -180,16 +194,20 @@
     observeTitle();
 
     window.addEventListener("focus", consumeOnFocus);
+    window.addEventListener("blur", onBlur);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") consumeOnFocus();
-      else scheduleReport();
+      else onBlur();
     });
 
     // If the app launches already focused (Tauri typically does this),
-    // treat the starting state as consumed too. Prevents an initial
-    // stale-title badge that would appear the moment the user blurs.
+    // treat the starting state as consumed. Prevents a stale initial
+    // title from appearing as unread the moment the user blurs.
     if (isAppFocused()) consumeOnFocus();
-    else scheduleReport();
+    else {
+      syncTitleState();
+      scheduleReport();
+    }
   }
 
   if (document.readyState === "loading") {
