@@ -6,6 +6,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use tauri::{
+    utils::config::BackgroundThrottlingPolicy,
     webview::{NewWindowFeatures, NewWindowResponse},
     AppHandle, Config, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
@@ -227,7 +228,21 @@ fn build_window(
 
     window_builder = window_builder
         .always_on_top(window_config.always_on_top)
-        .incognito(window_config.incognito);
+        .incognito(window_config.incognito)
+        // Tanka is a messaging client: we need the page to keep processing
+        // WebSocket pushes, update document.title, and fire
+        // window.Notification while the app is backgrounded or the window
+        // is hidden. Otherwise our unread bridge (inject/custom.js) has no
+        // signals to observe — the dock badge only surfaces when WKWebView
+        // happens to un-suspend (e.g. user activates the Dock tile).
+        // Requires macOS 14.0+ / iOS 17.0+; no-op otherwise per wry.
+        .background_throttling(BackgroundThrottlingPolicy::Disabled)
+        // Keep web inspector reachable in release builds. Tanka's unread
+        // bridge is fragile to site-specific behaviour (title blinks,
+        // iframes, service workers); without devtools we can't diagnose
+        // misbehaviour on an installed user build. Requires the "devtools"
+        // feature on the tauri crate.
+        .devtools(true);
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {

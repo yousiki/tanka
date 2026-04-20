@@ -104,15 +104,34 @@ Tanka.app (.app bundle)
         - MutationObserver on <title>; re-attaches if the SPA
           replaces the <title> node instead of mutating its text.
         - syncTitleState() runs synchronously in the observer — not
-          inside the debounced report — so a focus→blur race during
-          a title mutation can't land the wrong watermark.
-        - On focus / visible: consumeOnFocus pins watermark to the
-          current titleCount, zeros notificationCount.
-        - Reported count = max(notificationCount, titleCount - watermark).
-        - When the site's own title counter DECREASES while
-          backgrounded, delta-subtract notificationCount so
-          cross-device reads (phone, etc.) drop our badge too.
+          inside the debounced report — so a focus→blur race during a
+          title mutation can't land against the wrong focus state.
+        - On focus / visible: consumeOnFocus zeros notificationCount.
+          titleCount is NEVER consumed by focus — it mirrors the
+          site's own view of unread (persistent count), and the site
+          lowers it when the user actually reads, not when they merely
+          focus the window.
+        - Reported count = isAppFocused() ? 0 : max(notificationCount, titleCount).
+        - When the site's own title counter DECREASES, delta-subtract
+          notificationCount so cross-device reads (phone, etc.) drop
+          our badge too.
 ```
+
+### Why the webview must run while backgrounded
+
+`window.rs` sets `background_throttling(BackgroundThrottlingPolicy::Disabled)`.
+WKWebView's default (Suspend) freezes JS, timers, and WebSocket
+callbacks the moment the app loses focus — which means:
+
+- the site never calls `new Notification(...)` while backgrounded
+  (it never runs the message handler),
+- `<title>` never updates,
+- our bridge has no signals to observe,
+- the page doesn't refresh at all.
+
+Without this, the dock badge only surfaced when macOS happened to
+wake WKWebView briefly (e.g. auto-hide dock tile rendering). Do not
+revert — Tanka is an IM client, it's expected to keep the page alive.
 
 ### Why the unread bridge is the way it is
 
@@ -126,15 +145,19 @@ understanding the failure modes they avoid:
 - **Title state syncs in the observer, not the debounced report.**
   If syncTitleState ran inside the 60ms debounce, a title mutation at T=0
   + blur at T=30ms would have the debounce fire at T=60ms observing
-  `isAppFocused()=false` and fail to pin the watermark.
+  `isAppFocused()=false` under a stale sync.
 - **`previous > 0` guard on the delta-subtract.** Without it, the very
   first observation of a title with a numeric prefix could retroactively
   zero legitimate notification counts on a site that doesn't actually use
   title-based unread.
-- **Title watermark is pinned while focused, ratchets down when
-  backgrounded.** Any title value observed while the user is focused is
-  "consumed". A decreasing title while backgrounded means the user read
-  elsewhere; lower the watermark so future increments aren't masked.
+- **No title "watermark".** An earlier design pinned a watermark to the
+  current titleCount on focus and computed `titleCount - watermark`. The
+  intent was "don't re-surface a title value the user has already seen",
+  but for Tanka's persistent unread (title is "(5) Tanka" whenever there
+  are 5 unread, regardless of focus), this swallowed the very unread
+  the badge is supposed to show. Focusing the window ≠ reading the
+  messages; the site is the source of truth, and the site lowers its
+  count when the user actually reads. We now mirror titleCount directly.
 
 ### Security boundary
 

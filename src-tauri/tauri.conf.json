@@ -1,7 +1,7 @@
 {
   "productName": "Tanka",
   "identifier": "ai.tanka.desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "app": {
     "withGlobalTauri": true,
     "trayIcon": {

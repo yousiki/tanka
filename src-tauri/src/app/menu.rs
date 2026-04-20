@@ -134,7 +134,7 @@ fn view_menu(app: &AppHandle<Wry>) -> tauri::Result<Submenu<Wry>> {
         app,
         "toggle_devtools",
         "Toggle Developer Tools",
-        cfg!(debug_assertions),
+        true,
         Some("CmdOrCtrl+Option+I"),
     )?)?;
     Ok(view_menu)
@@ -206,7 +206,6 @@ pub fn handle_menu_click(app_handle: &AppHandle, id: &str) {
             }
         }
         "toggle_devtools" => {
-            #[cfg(debug_assertions)] // Only allow in debug builds
             if let Some(window) = app_handle.get_webview_window("pake") {
                 if window.is_devtools_open() {
                     window.close_devtools();
